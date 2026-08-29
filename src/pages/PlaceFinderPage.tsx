@@ -203,9 +203,16 @@ export const PlaceFinderPage: React.FC = () => {
             cleanedQuery
           )}`
         );
-        const data = await res.json();
+        let data: any = null;
+        if (res.ok) {
+          try {
+            data = await res.json();
+          } catch (jsonErr) {
+            console.warn('Place search JSON parse failed:', jsonErr);
+          }
+        }
 
-        if (res.ok && Array.isArray(data.places) && data.places.length > 0) {
+        if (data && Array.isArray(data.places) && data.places.length > 0) {
           const foundPlaces: Place[] = data.places.slice(0, 5);
           setPlaces(foundPlaces);
           setStepState('RESULTS_READY');
@@ -266,9 +273,16 @@ export const PlaceFinderPage: React.FC = () => {
             place.name
           )}`
         );
-        const data = await res.json();
+        let data: any = null;
+        if (res.ok) {
+          try {
+            data = await res.json();
+          } catch (jsonErr) {
+            console.warn('Directions JSON parse failed:', jsonErr);
+          }
+        }
 
-        if (res.ok && data.steps && data.steps.length > 0) {
+        if (data && data.steps && data.steps.length > 0) {
           const routeData: RouteDetails = {
             destinationName: data.destinationName || place.name,
             totalDistanceText: data.totalDistanceText || `${place.distanceMeters} meters`,

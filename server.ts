@@ -123,13 +123,15 @@ async function generateGeminiContentWithFallback(
 }
 
 const app = express();
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "15mb" }));
 
-async function startServer() {
-  const PORT = 3000;
+// Health check endpoint
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", service: "VisionAssist API" });
+});
 
-  // API route for full document image and OCR analysis using Gemini Vision
-  app.post("/api/analyze-document", async (req, res) => {
+// API route for full document image and OCR analysis using Gemini Vision
+app.post("/api/analyze-document", async (req, res) => {
     try {
       const { imageBase64, rawText } = req.body;
       const ai = getGeminiClient();
@@ -1114,25 +1116,29 @@ Return strictly raw JSON format:
     }
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+  // Start HTTP and Vite server for local & container environments
+  async function startServer() {
+    const PORT = 3000;
+
+    // Vite middleware for development
+    if (process.env.NODE_ENV !== "production") {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), "dist");
+      app.use(express.static(distPath));
+      app.get("*", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+    }
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://0.0.0.0:${PORT}`);
     });
   }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-  });
-}
 
 function generateFallbackSummary(text: string): string {
   const containsTerms = /terms|conditions/i.test(text);
