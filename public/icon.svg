@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="128" fill="#090d16" />
+  <circle cx="256" cy="256" r="180" fill="#1e293b" stroke="#facc15" stroke-width="16" />
+  <!-- Eye icon representation -->
+  <path d="M 116,256 C 160,170 352,170 396,256 C 352,342 160,342 116,256 Z" fill="none" stroke="#facc15" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" />
+  <!-- Soundwaves inside/around pupil -->
+  <circle cx="256" cy="256" r="48" fill="#facc15" />
+  <path d="M 256,120 A 136 136 0 0 1 392 256" fill="none" stroke="#38bdf8" stroke-width="16" stroke-linecap="round" />
+  <path d="M 256,392 A 136 136 0 0 1 120 256" fill="none" stroke="#38bdf8" stroke-width="16" stroke-linecap="round" />
+</svg>

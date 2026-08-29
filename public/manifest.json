@@ -1,0 +1,18 @@
+{
+  "short_name": "VisionAssist",
+  "name": "VisionAssist - Voice Accessibility App",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#090d16",
+  "theme_color": "#090d16",
+  "display": "standalone",
+  "orientation": "portrait",
+  "description": "Voice-first accessibility assistant for blind and visually impaired users."
+}

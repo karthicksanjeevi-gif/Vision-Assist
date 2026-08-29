@@ -1,0 +1,11 @@
+{
+  "name": "Remix VisionAssist",
+  "description": "Voice-first accessibility app for blind users with persistent voice commands and high-contrast UI.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
