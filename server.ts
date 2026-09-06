@@ -4,10 +4,8 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 
-async function startServer() {
+export async function createApp() {
   const app = express();
-  const PORT = 3000;
-
   app.use(express.json({ limit: "10mb" }));
 
   // API route for full document image and OCR analysis using Gemini Vision
@@ -387,8 +385,15 @@ ${text.slice(0, 4000)}`,
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  return app;
+}
+
+if (process.env.VERCEL !== "1") {
+  createApp().then((app) => {
+    const PORT = 3000;
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://0.0.0.0:${PORT}`);
+    });
   });
 }
 
@@ -575,4 +580,3 @@ function generateFallbackDirections(destName: string) {
   };
 }
 
-startServer();
