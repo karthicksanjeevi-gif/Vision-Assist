@@ -61,26 +61,82 @@ export class SpeechEngine {
         this.audioContext = new AudioCtx();
       }
 
-      if (this.audioContext.state === 'suspended') {
-        this.audioContext.resume();
+      const audioContext = this.audioContext as AudioContext | null;
+      if (!audioContext) return;
+
+      if (audioContext.state === 'suspended') {
+        audioContext.resume();
       }
 
-      const osc = this.audioContext.createOscillator();
-      const gain = this.audioContext.createGain();
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const destination = (audioContext as any).destination as AudioNode;
 
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(frequency, this.audioContext.currentTime);
+      osc.frequency.setValueAtTime(frequency, audioContext.currentTime);
 
-      gain.gain.setValueAtTime(0.2, this.audioContext.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, this.audioContext.currentTime + duration);
+      gain.gain.setValueAtTime(0.2, audioContext.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + duration);
 
       osc.connect(gain);
-      gain.connect(this.audioContext.destination);
+      gain.connect(destination);
 
       osc.start();
-      osc.stop(this.audioContext.currentTime + duration);
+      osc.stop(audioContext.currentTime + duration);
     } catch (e) {
       // Ignore audio context errors gracefully
+    }
+  }
+
+  public playUrgentDualBeep() {
+    // Dual high-frequency tone for Tier 1 Critical hazards
+    this.playChime(880, 0.09);
+    setTimeout(() => this.playChime(1174.66, 0.12), 110);
+  }
+
+  public playSpatialTone(pan = 0, frequency = 587.33, duration = 0.12) {
+    try {
+      if (typeof window === 'undefined') return;
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+
+      if (!this.audioContext) {
+        this.audioContext = new AudioCtx();
+      }
+
+      const audioContext = this.audioContext as AudioContext | null;
+      if (!audioContext) return;
+
+      if (audioContext.state === 'suspended') {
+        audioContext.resume();
+      }
+
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const destination = (audioContext as any).destination as AudioNode;
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(frequency, audioContext.currentTime);
+
+      gain.gain.setValueAtTime(0.2, audioContext.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + duration);
+
+      // Stereo panner if supported
+      if ('createStereoPanner' in audioContext) {
+        const panner = (audioContext as any).createStereoPanner();
+        panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), audioContext.currentTime);
+        osc.connect(gain);
+        gain.connect(panner);
+        panner.connect(destination);
+      } else {
+        osc.connect(gain);
+        gain.connect(destination);
+      }
+
+      osc.start();
+      osc.stop(audioContext.currentTime + duration);
+    } catch (e) {
+      // Ignore
     }
   }
 

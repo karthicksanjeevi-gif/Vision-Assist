@@ -252,11 +252,226 @@ ${text.slice(0, 4000)}`,
     }
   });
 
+  // API route for real-time obstacle detection from live video frame
+  app.post("/api/live-navigation/detect", async (req, res) => {
+    try {
+      const { imageBase64, mode } = req.body;
+      const navMode = String(mode || "indoor").toLowerCase();
+      const apiKey = process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY;
+
+      if (!imageBase64 || typeof imageBase64 !== "string") {
+        return res.status(400).json({ error: "A camera image is required for obstacle detection." });
+      }
+      if (!apiKey) {
+        return res.status(503).json({ error: "Cloud vision detection is not configured." });
+      }
+
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || apiKey });
+      const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, "");
+
+      const prompt = `You are a real-time assistive vision and obstacle detection AI for a blind person walking or navigating indoors/outdoors.
+Environment: ${navMode.toUpperCase()}.
+Analyze this camera image carefully.
+
+Identify whatever is in front of the camera:
+- If a person or human is in front of the camera: Label as "Person" or "Pedestrian", distance in meters (e.g. 0.8m, 1.2m, 2m), clock direction (e.g. "12 o'clock"), tier 1 if close (< 1.5m) or tier 2.
+- If indoor items (Desk, Laptop, Screen, Wall, Door, Cupboard, Chair, Table, Bed): State the item, distance, direction.
+- If drop-offs or stairs: State "Downward Stairs" or "Drop-off", tier 1.
+- If overhead hazards (low ceiling, branch, shelf): State overhead hazard, tier 1.
+
+CRITICAL:
+If there is a person, obstacle, furniture, or wall in the view, "clearPath" MUST be FALSE!
+"clearPath" is true ONLY when there is completely open space with no obstacles within 3 meters.
+
+Return strictly raw JSON (no backticks):
+{
+  "hazards": [
+    {
+      "id": "obs-1",
+      "label": "Person directly in front",
+      "category": "moving",
+      "tier": 1,
+      "distanceMeters": 0.9,
+      "clockPosition": "12 o'clock",
+      "directionText": "straight ahead",
+      "pan": 0.0,
+      "warningPhrase": "Person straight ahead, less than 1 meter away.",
+      "box": { "x": 0.2, "y": 0.1, "width": 0.6, "height": 0.8 }
+    }
+  ],
+  "clearPath": false,
+  "clearPathDistanceMeters": 0.9,
+  "summary": "Person directly in front of camera, 0.9 meters away."
+}`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            inlineData: {
+              mimeType: "image/jpeg",
+              data: cleanBase64,
+            },
+          },
+          prompt,
+        ],
+      });
+
+      const responseText = response.text || "";
+      const cleanJson = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(cleanJson);
+      } catch (err) {
+        console.warn("Failed to parse detect JSON:", responseText);
+        return res.status(502).json({ error: "Vision model returned an invalid detection response." });
+      }
+
+      console.log(`[LiveNav Detect] Mode: ${navMode}, Found ${parsed.hazards?.length || 0} hazards. Summary: "${parsed.summary}"`);
+
+      return res.json({
+        hazards: Array.isArray(parsed.hazards) ? parsed.hazards : [],
+        clearPath: Boolean(parsed.clearPath),
+        clearPathDistanceMeters: parsed.clearPathDistanceMeters,
+        summary: parsed.summary || "No detection summary was provided.",
+      });
+    } catch (err: any) {
+      console.error("Live navigation detect error:", err);
+      if (err?.status === 429) {
+        return res.status(429).json({ error: "Cloud vision quota is exhausted. Try again later." });
+      }
+      return res.status(502).json({ error: "Cloud vision obstacle detection failed." });
+    }
+  });
+
+  // API route for Live Navigation scene description & spatial awareness
+  app.post("/api/live-navigation/scene", async (req, res) => {
+    try {
+      const { imageBase64, mode } = req.body;
+      const navMode = String(mode || "indoor").toLowerCase();
+      const apiKey = process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY;
+
+      if (!imageBase64 || typeof imageBase64 !== "string") {
+        return res.status(400).json({ error: "A camera image is required for scene description." });
+      }
+      if (!apiKey) return res.status(503).json({ error: "Cloud scene description is not configured." });
+
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || apiKey });
+      const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, "");
+
+      const prompt = `You are a real-time spatial navigation assistant for a blind pedestrian.
+Operating mode: ${navMode.toUpperCase()}.
+Analyze this camera frame captured chest-high from the user's perspective.
+Provide a concise 2 to 3 sentence spatial description:
+- State what type of room, hallway, or street environment this is.
+- Specify visible obstacles, doors, stairs, ground obstacles, or pathways relative to the user (e.g., 'on your left', 'straight ahead').
+- Only provide a rough visual distance estimate when supportable, and explicitly say distances are approximate because this is a single uncalibrated camera.
+- Use clear, calm, spoken language directly addressing the pedestrian.
+Keep it strictly under 50 words. Do not use bullet points or markdown.`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            inlineData: {
+              mimeType: "image/jpeg",
+              data: cleanBase64
+            }
+          },
+          prompt
+        ]
+      });
+
+      const description = response.text?.trim();
+      if (!description) return res.status(502).json({ error: "Vision model returned no scene description." });
+      return res.json({ description });
+    } catch (err: any) {
+      console.error("Live navigation scene error:", err);
+      if (err?.status === 429) {
+        return res.status(429).json({ error: "Cloud vision quota is exhausted. Try again later." });
+      }
+      return res.status(502).json({ error: "Cloud scene description failed." });
+    }
+  });
+
+  // API route for target object localization (e.g. Find door, Find chair, Find stairs)
+  app.post("/api/live-navigation/find", async (req, res) => {
+    try {
+      const { imageBase64, target } = req.body;
+      const targetQuery = String(target || "door").toLowerCase();
+      const apiKey = process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY;
+
+      if (!imageBase64 || typeof imageBase64 !== "string") {
+        return res.status(400).json({ error: "A camera image is required to locate an object." });
+      }
+      if (!apiKey) return res.status(503).json({ error: "Cloud object localization is not configured." });
+
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || apiKey });
+      const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, "");
+
+      const prompt = `You are an accessibility spatial localization assistant for a blind person looking for: "${targetQuery}".
+Analyze this live camera view.
+Determine:
+1. Is "${targetQuery}" visible in the frame? (found: true/false)
+2. Directional guidance: instructions on which way to turn or step (e.g. "Turn slightly right... hold steady... chair located 2 meters directly ahead.")
+3. Estimated clock-face position (e.g., "11 o'clock", "12 o'clock", "2 o'clock")
+4. Very rough visual distance estimate in meters. State that distance is approximate because this is a single uncalibrated camera.
+
+Return strictly JSON matching:
+{
+  "found": true,
+  "direction": "Spoken turn instructions here",
+  "clockPosition": "12 o'clock",
+  "distanceMeters": 2.0
+}`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            inlineData: {
+              mimeType: "image/jpeg",
+              data: cleanBase64
+            }
+          },
+          prompt
+        ]
+      });
+
+      const cleanJson = (response.text || "").replace(/```json/gi, "").replace(/```/g, "").trim();
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(cleanJson);
+      } catch (e) {
+        return res.status(502).json({ error: "Vision model returned an invalid object-location response." });
+      }
+
+      return res.json(parsed);
+    } catch (err: any) {
+      console.error("Live navigation find error:", err);
+      if (err?.status === 429) {
+        return res.status(429).json({ error: "Cloud vision quota is exhausted. Try again later." });
+      }
+      return res.status(502).json({ error: "Cloud object localization failed." });
+    }
+  });
+
   // API route for nearby place search
   app.get("/api/places/nearby", async (req, res) => {
     try {
       const { lat, lng, query } = req.query;
-      if (!lat || !lng || !query) {
+      const userLat = Number(lat);
+      const userLng = Number(lng);
+      if (
+        !Number.isFinite(userLat) ||
+        !Number.isFinite(userLng) ||
+        userLat < -90 ||
+        userLat > 90 ||
+        userLng < -180 ||
+        userLng > 180 ||
+        typeof query !== "string" ||
+        !query.trim()
+      ) {
         return res.status(400).json({ error: "lat, lng, and query parameters are required" });
       }
 
@@ -265,51 +480,78 @@ ${text.slice(0, 4000)}`,
         process.env.GOOGLE_MAPS_API_KEY ||
         process.env.VITE_GOOGLE_MAPS_PLATFORM_KEY;
 
-      const categoryQuery = String(query).trim().toLowerCase();
+      const categoryQuery = query.trim();
 
       if (apiKey) {
         try {
-          const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=3000&keyword=${encodeURIComponent(
-            categoryQuery
-          )}&key=${apiKey}`;
-          const response = await fetch(url);
-          const data = await response.json();
+          const params = new URLSearchParams({
+            location: `${userLat},${userLng}`,
+            radius: "3000",
+            keyword: categoryQuery,
+            key: apiKey,
+          });
+          const googleResults: any[] = [];
+          let nextPageToken: string | undefined;
 
-          if (data.status === "OK" && Array.isArray(data.results) && data.results.length > 0) {
-            const userLat = parseFloat(String(lat));
-            const userLng = parseFloat(String(lng));
+          for (let page = 0; page < 3; page += 1) {
+            let pageParams = params;
+            if (nextPageToken) {
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+              pageParams = new URLSearchParams({
+                pagetoken: nextPageToken,
+                key: apiKey,
+              });
+            }
 
-            const places = data.results.slice(0, 5).map((p: any, index: number) => {
-              const pLat = p.geometry?.location?.lat || userLat;
-              const pLng = p.geometry?.location?.lng || userLng;
+            const response = await fetch(`https://maps.googleapis.com/maps/api/place/nearbysearch/json?${pageParams}`, {
+              signal: AbortSignal.timeout(12000),
+            });
+            if (!response.ok) throw new Error(`Google Places returned HTTP ${response.status}`);
+            const data = await response.json();
+
+            if (data.status !== "OK" || !Array.isArray(data.results)) break;
+            googleResults.push(...data.results);
+            nextPageToken = data.next_page_token;
+            if (!nextPageToken) break;
+          }
+
+          if (googleResults.length > 0) {
+            const places = googleResults.map((p: any, index: number) => {
+              const pLat = p.geometry?.location?.lat;
+              const pLng = p.geometry?.location?.lng;
+              if (typeof pLat !== "number" || typeof pLng !== "number") return null;
               const distMeters = calculateHaversineDistance(userLat, userLng, pLat, pLng);
-              const direction = calculateBearingDirection(userLat, userLng, pLat, pLng);
+              const clockDirection = calculateClockDirection(userLat, userLng, pLat, pLng);
+              const relativeDirection = calculateRelativeDirection(userLat, userLng, pLat, pLng);
+              const isOpen = p.opening_hours?.open_now;
+              const openStatus = isOpen === true ? "Open now" : isOpen === false ? "Closed now" : "Hours not listed";
 
               return {
-                id: p.place_id || `place-${index + 1}`,
+                id: p.place_id || `google-place-${index + 1}`,
                 name: p.name,
                 vicinity: p.vicinity || p.formatted_address || "Nearby",
                 lat: pLat,
                 lng: pLng,
                 distanceMeters: distMeters,
-                directionText: direction,
+                directionText: relativeDirection,
+                clockDirection: clockDirection,
+                openStatus,
                 rating: p.rating,
               };
-            });
+            }).filter(Boolean).sort((left: any, right: any) => left.distanceMeters - right.distanceMeters).slice(0, 20);
 
-            return res.json({ places, source: "google_places" });
+            if (places.length > 0) return res.json({ places, source: "google_places" });
           }
         } catch (apiErr) {
-          console.warn("Google Places API call failed, using fallback:", apiErr);
+          console.warn("Google Places API call failed; trying OpenStreetMap:", apiErr);
         }
       }
 
-      // Fallback generation if no API key or zero results
-      const fallbackPlaces = generateFallbackPlaces(categoryQuery, parseFloat(String(lat)), parseFloat(String(lng)));
-      return res.json({ places: fallbackPlaces, source: "simulated_nearby" });
+      const places = await searchOpenStreetMapPlaces(userLat, userLng, categoryQuery);
+      return res.json({ places, source: "openstreetmap", radiusMeters: 3000 });
     } catch (err: any) {
       console.error("Nearby search error:", err);
-      return res.status(500).json({ error: "Failed to search nearby places" });
+      return res.status(502).json({ error: "Could not retrieve real nearby places. Check your connection and try again." });
     }
   });
 
@@ -488,14 +730,37 @@ function calculateHaversineDistance(lat1: number, lon1: number, lat2: number, lo
   return Math.round(R * c);
 }
 
-function calculateBearingDirection(lat1: number, lon1: number, lat2: number, lon2: number): string {
+function calculateBearingDegrees(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const y = Math.sin(((lon2 - lon1) * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180);
   const x =
     Math.cos((lat1 * Math.PI) / 180) * Math.sin((lat2 * Math.PI) / 180) -
     Math.sin((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.cos(((lon2 - lon1) * Math.PI) / 180);
   let brng = (Math.atan2(y, x) * 180) / Math.PI;
-  brng = (brng + 360) % 360;
+  return (brng + 360) % 360;
+}
 
+function calculateRelativeDirection(lat1: number, lon1: number, lat2: number, lon2: number): string {
+  const brng = calculateBearingDegrees(lat1, lon1, lat2, lon2);
+  // Assuming pedestrian facing forward/north as reference
+  if (brng >= 337.5 || brng < 22.5) return "straight ahead";
+  if (brng >= 22.5 && brng < 67.5) return "to your front-right";
+  if (brng >= 67.5 && brng < 112.5) return "to your right";
+  if (brng >= 112.5 && brng < 157.5) return "to your back-right";
+  if (brng >= 157.5 && brng < 202.5) return "behind you";
+  if (brng >= 202.5 && brng < 247.5) return "to your back-left";
+  if (brng >= 247.5 && brng < 292.5) return "to your left";
+  return "to your front-left";
+}
+
+function calculateClockDirection(lat1: number, lon1: number, lat2: number, lon2: number): string {
+  const brng = calculateBearingDegrees(lat1, lon1, lat2, lon2);
+  const hour = Math.round(brng / 30) % 12;
+  const clockNum = hour === 0 ? 12 : hour;
+  return `${clockNum} o'clock`;
+}
+
+function calculateBearingDirection(lat1: number, lon1: number, lat2: number, lon2: number): string {
+  const brng = calculateBearingDegrees(lat1, lon1, lat2, lon2);
   if (brng >= 337.5 || brng < 22.5) return "north";
   if (brng >= 22.5 && brng < 67.5) return "north-east";
   if (brng >= 67.5 && brng < 112.5) return "east";
@@ -506,52 +771,114 @@ function calculateBearingDirection(lat1: number, lon1: number, lat2: number, lon
   return "north-west";
 }
 
-function generateFallbackPlaces(query: string, userLat: number, userLng: number) {
+async function searchOpenStreetMapPlaces(userLat: number, userLng: number, query: string) {
   const normalized = query.toLowerCase();
+  const around = `(around:3000,${userLat},${userLng})`;
+  const selectors: string[] = [];
+  const addSelector = (key: string, value: string) => {
+    for (const elementType of ["node", "way", "relation"]) {
+      selectors.push(`${elementType}${around}["${key}"="${value}"];`);
+    }
+  };
 
-  let placeTemplates = [
-    { nameSuffix: "Central", offsetLat: 0.0012, offsetLng: 0.0015 },
-    { nameSuffix: "Metro", offsetLat: -0.0018, offsetLng: 0.0022 },
-    { nameSuffix: "Express", offsetLat: 0.0025, offsetLng: -0.0018 },
-  ];
-
-  let categoryLabel = "Place";
-  if (normalized.includes("pharmacy") || normalized.includes("chemist") || normalized.includes("drug")) {
-    categoryLabel = "Pharmacy";
-  } else if (normalized.includes("restaurant") || normalized.includes("food") || normalized.includes("diner") || normalized.includes("eat")) {
-    categoryLabel = "Restaurant";
-  } else if (normalized.includes("bus") || normalized.includes("stop") || normalized.includes("transit") || normalized.includes("station")) {
-    categoryLabel = "Bus Stop";
-  } else if (normalized.includes("coffee") || normalized.includes("cafe") || normalized.includes("starbucks")) {
-    categoryLabel = "Café";
-  } else if (normalized.includes("bank") || normalized.includes("atm")) {
-    categoryLabel = "ATM / Bank";
-  } else if (normalized.includes("hospital") || normalized.includes("clinic") || normalized.includes("doctor")) {
-    categoryLabel = "Medical Center";
-  } else if (normalized.includes("store") || normalized.includes("grocery") || normalized.includes("market")) {
-    categoryLabel = "Market";
+  if (/pharmacy|chemist|drugstore/.test(normalized)) {
+    addSelector("amenity", "pharmacy");
+  } else if (/bus stop|bus|transit/.test(normalized)) {
+    addSelector("highway", "bus_stop");
+    addSelector("public_transport", "platform");
+    addSelector("public_transport", "station");
+  } else if (/train|rail|metro|subway/.test(normalized)) {
+    addSelector("railway", "station");
+    addSelector("public_transport", "station");
+  } else if (/restaurant|food|diner|eatery/.test(normalized)) {
+    addSelector("amenity", "restaurant");
+    addSelector("amenity", "fast_food");
+  } else if (/cafe|coffee|bakery/.test(normalized)) {
+    addSelector("amenity", "cafe");
+    addSelector("shop", "bakery");
+  } else if (/grocery|supermarket|market|convenience/.test(normalized)) {
+    addSelector("shop", "supermarket");
+    addSelector("shop", "convenience");
+  } else if (/atm|bank/.test(normalized)) {
+    addSelector("amenity", "atm");
+    addSelector("amenity", "bank");
+  } else if (/restroom|toilet|bathroom/.test(normalized)) {
+    addSelector("amenity", "toilets");
+  } else if (/hospital|clinic|doctor|medical/.test(normalized)) {
+    addSelector("amenity", "hospital");
+    addSelector("amenity", "clinic");
+    addSelector("amenity", "doctors");
   } else {
-    // Capitalize requested query
-    categoryLabel = query.charAt(0).toUpperCase() + query.slice(1);
+    const escapedQuery = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    for (const elementType of ["node", "way", "relation"]) {
+      for (const key of ["name", "brand", "operator"]) {
+        selectors.push(`${elementType}${around}["${key}"~"${escapedQuery}",i];`);
+      }
+    }
   }
 
-  return placeTemplates.map((tpl, i) => {
-    const pLat = userLat + tpl.offsetLat;
-    const pLng = userLng + tpl.offsetLng;
-    const distanceMeters = calculateHaversineDistance(userLat, userLng, pLat, pLng);
-    const directionText = calculateBearingDirection(userLat, userLng, pLat, pLng);
+  const overpassQuery = `[out:json][timeout:18];(${selectors.join("")});out center tags;`;
+  const overpassEndpoints = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+  ];
+  let data: any;
+  let lastError: unknown;
 
-    return {
-      id: `fallback-${i + 1}`,
-      name: `${tpl.nameSuffix} ${categoryLabel}`,
-      vicinity: `Main Street, ${distanceMeters}m away`,
-      lat: pLat,
-      lng: pLng,
-      distanceMeters,
-      directionText,
-      rating: 4.5,
-    };
-  });
+  for (const endpoint of overpassEndpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": "VisionAssist Place Finder",
+        },
+        body: new URLSearchParams({ data: overpassQuery }),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!response.ok) throw new Error(`OpenStreetMap Overpass returned HTTP ${response.status}`);
+      data = await response.json();
+      break;
+    } catch (error) {
+      lastError = error;
+      console.warn(`OpenStreetMap Overpass request failed at ${endpoint}:`, error);
+    }
+  }
+
+  if (!data) throw lastError instanceof Error ? lastError : new Error("All OpenStreetMap Overpass services are unavailable.");
+
+  const elements = Array.isArray(data.elements) ? data.elements : [];
+  const places = elements
+    .map((element: any) => {
+      const placeLat = element.lat ?? element.center?.lat;
+      const placeLng = element.lon ?? element.center?.lon;
+      if (typeof placeLat !== "number" || typeof placeLng !== "number") return null;
+
+      const tags = element.tags || {};
+      const name = tags.name || tags.brand || tags.operator;
+      if (typeof name !== "string" || !name.trim()) return null;
+
+      const distanceMeters = calculateHaversineDistance(userLat, userLng, placeLat, placeLng);
+      return {
+        id: `osm-${element.type}-${element.id}`,
+        name,
+        vicinity: [tags["addr:street"], tags["addr:city"]].filter(Boolean).join(", ") || "Address not listed",
+        lat: placeLat,
+        lng: placeLng,
+        distanceMeters,
+        directionText: calculateRelativeDirection(userLat, userLng, placeLat, placeLng),
+        clockDirection: calculateClockDirection(userLat, userLng, placeLat, placeLng),
+        openStatus: tags.opening_hours || undefined,
+      };
+    })
+    .filter((place: any): place is NonNullable<typeof place> => place !== null)
+    .sort((left: any, right: any) => left.distanceMeters - right.distanceMeters);
+
+  const uniquePlaces = places.filter(
+    (place: any, index: number, all: any[]) => all.findIndex((candidate) => candidate.name === place.name) === index,
+  );
+  return uniquePlaces.slice(0, 20);
 }
 
 function generateFallbackDirections(destName: string) {
@@ -579,4 +906,3 @@ function generateFallbackDirections(destName: string) {
     source: "simulated_route",
   };
 }
-
